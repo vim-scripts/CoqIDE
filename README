@@ -1,0 +1,21 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=4388
+
+You can use this script to make vim behaves like CoqIDE.
+
+This script works with +perl vim option.
+
+Should work well on non-gui version of vim on unix system.
+
+add the mapping :
+<F2> undo last command
+<F3> send next command
+<F4> goto the command under the cursor
+<F5> undo all commands
+<F6> send all the buffer
+<F7> refresh screen
+<F8> kill coqtop
+
+b : break computation (only when a command is being interpreted)
+
+See comments at beginning of coq_IDE.vim for more informations.
+
