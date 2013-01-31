@@ -71,13 +71,26 @@ if exists('g:loaded_CoqIDE')
 endif
 let g:loaded_CoqIDE = 1
 
+function s:cant_run(why)
+  let s:why_cant_run = a:why
+  let s:has_yelled = 0
+  function CoqIDE_yell_bad()
+    if ! s:has_yelled
+      echoerr s:why_cant_run
+      let s:has_yelled = 1
+    endif
+  endfunction
+  autocmd BufEnter *.v call CoqIDE_yell_bad()
+  autocmd WinEnter *.v call CoqIDE_yell_bad()
+endfunction
+
 if !has('perl')
-  echoerr "Your vim doesn't supports perl. Install it before using CoqIde mode."
+  call s:cant_run("Your vim doesn't supports perl. Install it before using CoqIde mode.")
   finish
 endif
 
 if executable(s:coqtop) < 1
-  echoerr s:coqtop . ': command not found.'
+  call s:cant_run(s:coqtop . ': command not found.')
   finish
 endif
 
@@ -120,12 +133,14 @@ let s:refreshcount = 100 " When processing a bunch of commands refresh the scree
 " Global definitions
 
 function s:Debug(category, msg)
+  if 0
+  "if a:category == 'infonextdot'
   "if a:category == 'UpdateColor'
   "if a:category == 'NextPosN'
   "if a:category == 'info_undo'
   "if a:category == 'info_history' || a:category == 'info_undo'
-  "  echomsg a:msg
-  "endif
+    echomsg a:msg
+  endif
 endfunction
 
 """""""""""""""""""""""""""""""
@@ -913,46 +928,56 @@ function s:GetNextCmd()
     return [GetPart(b:curline, b:curcol, l:dline, l:dcol + 1), l:dline, l:dcol + 1, 0]
   endif
 
-  " Then Search for a '.' outside comments
-  let l:found = 0
-  let l:eof = 0
-  let l:dline = l:npl
-  let l:dcol = l:npc
-
-  if getline(l:dline, l:dline) == []
-    let l:eof = 1
+  if getline(l:npl, l:npl) == []
+    throw "eof"
   endif
 
-  while(! (l:found || l:eof))
-    call cursor(l:dline, l:dcol)
-    let [l:cline, l:ccol] = searchpos('(\*', 'cW')
-    let [l:dline, l:dcol] = s:NextDot(l:dline, l:dcol)
+  " Then Search for a '.' outside comments
 
-    call s:Debug('infonextdot', '"(*" found at ' . l:cline . ', ' . l:ccol)
-    call s:Debug('infonextdot', '"." found at ' . l:dline . ', ' . l:dcol)
+  let l:found = 0
 
-    if l:dline == 0 && l:dcol == 0
-      let l:eof = 1 " Could be either EOF or the last command has no '.' at its end.
-    endif
+  call cursor(l:npl, l:npc)
 
-    if l:cline == 0 && l:ccol == 0 || (l:dline < l:cline || l:dline == l:cline && l:dcol < l:ccol)
-      " Next comment begin after the next '.' (or no comment) so things are OK
+  while(! l:found)
+    let [l:cline, l:ccol] = searchpos('(\*', 'cWn')
+    let [l:dline, l:dcol] = searchpos('\%(^\|[^.]\zs\)\.\%($\|\s\)', 'cWn')
+    let [l:sline, l:scol] = searchpos('"\%([^"\\]\|\\.\)*"', 'cWn')
+    let [l:nline, l:ncol] = s:GetLowest(l:cline, l:ccol, l:dline, l:dcol)
+    let [l:nline, l:ncol] = s:GetLowest(l:nline, l:ncol, l:sline, l:scol)
+
+    call s:Debug('infonextdot', 'comment found at ' . l:cline . ', ' . l:ccol)
+    call s:Debug('infonextdot', 'dot found at ' . l:dline . ', ' . l:dcol)
+    call s:Debug('infonextdot', 'string found at ' . l:sline . ', ' . l:scol)
+    call s:Debug('infonextdot', 'next is ' . l:nline . ', ' . l:ncol)
+
+    if l:nline == 0 && l:ncol == 0
+      " Nothing was found. Game over. Signal EOF and out of the loop.
+      throw 'eof'
+    elseif l:nline == l:dline && l:ncol == l:dcol
+      " The next thing of interest is a dot. Set l:found to get out of the
+      " loop, and leave the mtch position in l:dline/l:dcol.
       let l:found = 1
-    else
-      " Else move the cursor to the end of the comment
+    elseif l:nline == l:sline && l:ncol == l:scol
+      " Next thing is a string. Move past it and loop.
+      call cursor(l:sline, l:scol)
+      call search('"\%([^"\\]\|\\.\)*"', 'cWe')
+      call s:Debug('infonextdot', "end string found at " . b:curline . ', ' . b:curcol)
+    elseif l:nline == l:cline && l:ncol == l:ccol
+      " Next thing is a comment. Find its end.
       call cursor(l:cline, l:ccol)
       let [l:dline, l:dcol] = searchpairpos('(\*', '', '\*)', 'W')
       call s:Debug('infonextdot', '"*)" found at ' . l:dline . ', ' . l:dcol)
-
       if l:dline == 0 && l:dcol == 0
-        let l:eof = 1
+        " If it didn't end, EOF
+        throw "eof"
+      else
+        " Move to the end, loop.
+        call cursor(l:dline, l:dcol)
       endif
+    else
+      throw "GetNextCmd: internal error"
     endif
   endwhile
-
-  if l:eof == 1
-    throw 'eof'
-  endif
 
   call s:Debug('infonextdot', 'Next dot is at ' . l:dline . ', ' . l:dcol)
 
@@ -1083,14 +1108,14 @@ function s:ShowGoals(fgbg)
   endif
   call append(1, l:hyps)
   let l:count = 1 + len(l:hyps)
-  call append(l:count, '====================================================================== (1/' . l:nbgoal . ')')
+  call append(l:count, '============================== (1/' . l:nbgoal . ')')
   call append(l:count + 1, l:goal)
   normal kmaj
   let l:count += 1 + len(l:goal)
   let l:gnb = 2
   for l:remaingoal in l:fg[1:-1]
     let [_, l:goal] = l:remaingoal
-    call append(l:count, ['', '====================================================================== (' . l:gnb . '/' . l:nbgoal . ')'])
+    call append(l:count, ['', '============================== (' . l:gnb . '/' . l:nbgoal . ')'])
     call append(l:count + 2, l:goal)
     let l:gnb += 1
     let l:count += 2 + len(l:goal)
