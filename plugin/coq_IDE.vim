@@ -71,13 +71,26 @@ if exists('g:loaded_CoqIDE')
 endif
 let g:loaded_CoqIDE = 1
 
+function s:cant_run(why)
+  let s:why_cant_run = a:why
+  let s:has_yelled = 0
+  function CoqIDE_yell_bad()
+    if ! s:has_yelled
+      echoerr s:why_cant_run
+      let s:has_yelled = 1
+    endif
+  endfunction
+  autocmd BufEnter *.v call CoqIDE_yell_bad()
+  autocmd WinEnter *.v call CoqIDE_yell_bad()
+endfunction
+
 if !has('perl')
-  echoerr "Your vim doesn't supports perl. Install it before using CoqIde mode."
+  call s:cant_run("Your vim doesn't supports perl. Install it before using CoqIde mode.")
   finish
 endif
 
 if executable(s:coqtop) < 1
-  echoerr s:coqtop . ': command not found.'
+  call s:cant_run(s:coqtop . ': command not found.')
   finish
 endif
 
