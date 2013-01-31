@@ -1108,14 +1108,14 @@ function s:ShowGoals(fgbg)
   endif
   call append(1, l:hyps)
   let l:count = 1 + len(l:hyps)
-  call append(l:count, '====================================================================== (1/' . l:nbgoal . ')')
+  call append(l:count, '============================== (1/' . l:nbgoal . ')')
   call append(l:count + 1, l:goal)
   normal kmaj
   let l:count += 1 + len(l:goal)
   let l:gnb = 2
   for l:remaingoal in l:fg[1:-1]
     let [_, l:goal] = l:remaingoal
-    call append(l:count, ['', '====================================================================== (' . l:gnb . '/' . l:nbgoal . ')'])
+    call append(l:count, ['', '============================== (' . l:gnb . '/' . l:nbgoal . ')'])
     call append(l:count + 2, l:goal)
     let l:gnb += 1
     let l:count += 2 + len(l:goal)
