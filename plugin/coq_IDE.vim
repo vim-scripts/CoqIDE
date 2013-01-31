@@ -120,12 +120,14 @@ let s:refreshcount = 100 " When processing a bunch of commands refresh the scree
 " Global definitions
 
 function s:Debug(category, msg)
+  if 0
+  "if a:category == 'infonextdot'
   "if a:category == 'UpdateColor'
   "if a:category == 'NextPosN'
   "if a:category == 'info_undo'
   "if a:category == 'info_history' || a:category == 'info_undo'
-  "  echomsg a:msg
-  "endif
+    echomsg a:msg
+  endif
 endfunction
 
 """""""""""""""""""""""""""""""
