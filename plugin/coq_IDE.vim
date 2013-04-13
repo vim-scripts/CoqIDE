@@ -1,28 +1,41 @@
-" Document {{{
-" Copyright: Copyright (C) 2012 Matthieu Carlier
-" Last Change:  2012 January 6
+" Copyright: Copyright (C) 2013 Matthieu Carlier
+" Last Change: 2013 April 14
 "
 " Filename: coq_IDE.vim
 " Author:   Matthieu Carlier <matthieu.carlier@caramail.fr>
-" URL:      Soon ?
-" $revision: 0.91b$
+" URL:      http://www.vim.org/scripts/script.php?script_id=4388
+" $revision: 0.94b$
 "
 " License: CeCILL-C V1
 "
 " Description:
-" You can use this script to make vim behaves like CoqIDE
+" You can use this script to make vim behaves like CoqIDE.
 "
 " Installation:
 " Copy this file to "~/.vim/ftplugin/coq_IDE.vim".
+" You need to add "filetype plugin on" in your "~/.vimrc" for loading
+" automatically the plugin.
 "
 " Prerequisite:
-" This plugin requires +perl support in vim and need coq version >=8.4beta
+" This plugin requires +perl support in vim and need Coq version >=8.4beta
 " available on $PATH.
 "
 " Configuration:
 " Nothing to be done when "coqtop.opt" is accessible via PATH variable.
-" Otherwise you can specify it by adding
-" 'let coqtop = "/path/to/exe/my_cmd"' in your "~/.vimrc".
+" Otherwise you can specify it path by adding
+" 'let CoqIDE_coqtop = "/path/to/coqtop.opt"' in your "~/.vimrc".
+"
+" If you want to load default key binding, add "let g:CoqIDEDefaultKeyMap = 1"
+" in your "~/.vimrc" or execute command "CoqIDESetMap" after loading a "*.v".
+"
+" Here are the default key bindings :
+"    <F2> -> IDEUndo
+"    <F3> -> IDENext
+"    <F4> -> IDEToCursor
+"    <F5> -> IDEUndoAll
+"    <F6> -> IDEToEOF
+"    <F7> -> IDERefresh     
+"    <F8> -> IDEKill
 "
 " Usage:
 " Open a .v file.
@@ -32,36 +45,38 @@
 "  - IDEToCursor     Send all commands through cursor position (not included)
 "  - IDEUndoAll      Rewind all commands
 "  - IDEToEOF        Send all commands through the end of file
-"  - IDERefresh      Refresh the windows Goals and Informations and center cursor on current command
+"  - IDERefresh      Refresh the windows Goals and Informations and center
+"                    cursor on current command
 "  - IDEKill         Kill coqtop
-"
-" You can also use the following default key binding :
-"    <F2> -> IDEUndo
-"    <F3> -> IDENext
-"    <F4> -> IDEToCursor
-"    <F5> -> IDEUndoAll
-"    <F6> -> IDEToEOF
-"    <F7> -> IDERefresh     
-"    <F8> -> IDEKill
 "
 " To break a long computation type 'b'
 "
 " Known Bugs:
-"  - the script could be wrong on guessing where the buffer is modified (see ActionOccured())
-"  - breaking computation (by pressing 'b') only works on terminal (see ugly hack in s:ReadCoqTop())
+"  - the script could be wrong on guessing where the buffer is modified (see
+"    s:ActionOccured())
+"  - breaking computation (by pressing 'b') only works on terminal (see ugly
+"    hack in s:ReadCoqTop())
 "  - :redraw doesn't work on MacVim GUI. What about gvim ?
 "
 " History:
+"   2013-04-01
+"     Few aesthetics change
+"     Change interface, you can known source this script without problem
+"
+"   2013-01-21
+"     Fix a bug on '-', '+', '*', '{', '}' and comments at beginning of file
+"     Now key bindings are not loaded by default, set g:CoqIDEDefaultKeyMap
+"
 "   2012-09-01
 "     Add support for '-', '+', '*', '{' and '}' in proof
 "     Now comments are treated as separated command
 "
 "   2012-05-24
 "     Initial version is created
-" }}}
-
-if exists('coqtop')
-  let s:coqtop = coqtop
+"
+" Checks vim version/features and environment {{{1
+if exists('CoqIDE_coqtop')
+  let s:coqtop = CoqIDE_coqtop
 else
   let s:coqtop = 'coqtop.opt'
 endif
@@ -76,15 +91,17 @@ if !has('perl')
   finish
 endif
 
+if v:version < 700
+  echoerr "Wrong version of vim. Get at least version 7.00."
+  finish
+endif
+
 if executable(s:coqtop) < 1
   echoerr s:coqtop . ': command not found.'
   finish
 endif
 
-let s:refreshcount = 100 " When processing a bunch of commands refresh the screen
-                         " every s:refreshcount sent commands.
-
-" Prelude {{{
+" Prelude: definition of utilities {{{1
 " XML Queries Syntax :
 " <call val="interp" [raw=("true|"false")] [verbose=("true"|"false")]>COQ_INSTRUCTION</call>
 " <call val="rewind" steps="nb"></call>
@@ -99,19 +116,24 @@ let s:refreshcount = 100 " When processing a bunch of commands refresh the scree
 "
 " b:lastquery        : last XML query
 " b:lastresponse     : last XML response
+" b:lastgoalresponse : last XML response for goal printing
 " b:lastquerykind    : kind of last query
+" b:queryhistory     : list of all queries
 "
 " b:coqhistory       : list of all commands sent to coqtop
-" b:nbstep           : number of command register to coqhistory
+" b:nbstep           : number of command registered in coqhistory
 " b:nbsent           : number of command sent to coqtop
-" b:curline b:curcol : position a last character sent
-" b:tcol, b:tline    : position of the character to send
+" b:curline b:curcol : position of last character sent
+" b:tcol, b:tline    : position of the character to send (target)
 "
 " b:coqtop_pid       : pid of running coqtop
 " b:mychangedtick    : number of change since opening of buffer
-" b:init             : the script has been initialized
-" b:info             : text to be printed on Informations buffer (string list)
+" b:CoqIDEInit       : the script has been initialized
+" b:info             : text to be printed in Informations buffer (string list)
 "
+
+let s:refreshcount = 100 " When processing a bunch of commands refresh the
+                         " screen every s:refreshcount sent commands.
 
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -127,6 +149,11 @@ function s:Debug(category, msg)
   "  echomsg a:msg
   "endif
 endfunction
+
+if !exists('*DebugTraceAdd')
+  function DebugTraceAdd(color, idx, l1, c1, l2, c2)
+  endfunction
+endif
 
 """""""""""""""""""""""""""""""
 """""""""""""""""""""""""""""""
@@ -163,7 +190,7 @@ function s:AddToHistory(bline, bcol, eline, ecol, sent)
   let b:nbstep = b:nbstep + 1
 endfunction
 
-function HistorySentIdx(sent)
+function s:HistorySentIdx(sent)
   call s:Debug('info_history', 'HistorySentIdx: a:sent = ' . a:sent)
   let l:found = 0
   let l:cur = a:sent - 1
@@ -181,7 +208,7 @@ function HistorySentIdx(sent)
 endfunction
 
 " Get the number of the command sent to coqtop which contains the position
-" [nline, ncol]. A comment is consider as part of the command just after it.
+" [nline, ncol]. A comment is considered as part of the next effective command.
 "
 " -1 if not found
 function s:GetStep(nline, ncol)
@@ -280,19 +307,6 @@ function s:NextPosN(l, c, n)
 
 endfunction
 
-" From position [(line, col)], returns the position of the next '.'.
-" Do not check whether the '.' is inside a comment
-function s:NextDot(line, col)
-
-  " a dot could be either at end of a line or inner a line
-  call cursor(a:line, a:col)
-  let [l:nline1, l:ncol1] = searchpos('\.$', 'cW')
-  call cursor(a:line, a:col)
-  let [l:nline2, l:ncol2] = searchpos('\.\s', 'cW')
-
-  return s:GetLowest(l:nline1, l:ncol1, l:nline2, l:ncol2)
-endfunction
-
 function s:RedrawCenter()
   call s:SetColorTarget()
   call s:UpdateBufColor()
@@ -308,6 +322,7 @@ endfunction
 " The functions for setting colors
 "
 "
+highlight CoqIDEDebug ctermbg=LightBlue guibg=LightBlue
 highlight SentToCoq ctermbg=LightGreen guibg=LightGreen
 highlight WillSendToCoq ctermbg=Yellow guibg=Yellow
 highlight link CoqTopError Error
@@ -333,6 +348,10 @@ function s:PatBlock(bline, bcol, eline, ecol)
   return l:pattern
 endfunction
 
+function! s:PatFromPos(line, col, pattern)
+  return s:PatLine('', a:line) . s:PatCol('', a:col) . a:pattern
+endfunction
+
 " 1. Change color of the lines from beginning of the buffer to [nline], [ncol]
 " 2. Set the global variable [b:curline] and [b:curcol] to [nline] and
 " [ncol]
@@ -342,13 +361,13 @@ function s:UnsetColorSent()
     call matchdelete(w:clinesent)
     let w:clinesent = -1
   endif
- "syntax clear SentToCoq
 endfunction
 
 function s:SetColorSent()
   call s:UnsetColorSent()
-  let w:clinesent = matchadd('SentToCoq', s:PatLine('<', b:curline) . '[^$]' . '\|' .  s:PatLine('', b:curline) . s:PatCol('<', b:curcol + 1) . '[^$]', 5)
-  "execute 'syntax match SentToCoq contains=TOP "' . s:PatLine('<', b:curline) . '[^$]' . '\|' . s:PatLine('', b:curline) . s:PatCol('<', b:curcol + 1) . '[^$]"'
+  if exists('b:coqtop_pid')
+    let w:clinesent = matchadd('SentToCoq', s:PatLine('<', b:curline) . '[^$]' . '\|' .  s:PatLine('', b:curline) . s:PatCol('<', b:curcol + 1) . '[^$]', 5)
+  endif
 endfunction
 
 function s:SetLastPositionSent(nline, ncol)
@@ -389,15 +408,14 @@ function s:UnsetColorError()
     call matchdelete(w:cerror)
     let w:cerror = -1
   endif
-  "syntax clear CoqTopError
 endfunction
 
 " Color in red the character number a:start to number a:end. 0 is the last
 " position sent to coqtop.
 function s:SetColorError(start, end)
-  " sometimes a:end is before a:start
+  " Sometimes a:end is before a:start
   " Sometimes (a:start= '58', a:end = '102') vim does not convert the string
-  " into an int correctly so we add a 0 :
+  " into an int correctly so we add a "+ 0" at function call
   let [l:start, l:end] = (a:start <= a:end)?[a:start, a:end]:[a:end, a:start]
   call s:UnsetColorError()
 
@@ -438,46 +456,27 @@ function s:UpdateBufColor()
 endfunction
 
 " Update the "sent" color on all windows (called when the tab changed)
-function UpdateColor()
+function s:UpdateColor()
   if exists('s:in_script')
     return
   endif
 
   call s:Debug('UpdateColor', '>>> UpdateColor()')
   let l:savpos = getpos('.')
-
-  let l:allbuf = tabpagebuflist()
-  let l:i = 0
-  "echomsg string(l:allbuf)
-  while l:i < len(l:allbuf)
-    if bufname(l:allbuf[l:i]) =~# '.*\.v'
-      execute (l:i + 1) . 'wincmd w'
-      call s:SetColorSent()
-    endif
-    let l:i = l:i + 1
-  endwhile
-
+  windo call s:SetColorSent()
   call setpos('.', l:savpos)
   call s:Debug('UpdateColor', '<<< UpdateColor()')
 endfunction
 
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+" coqtop: launching, sending messages and receiving messages {{{1
 "
-" }}}
-
-" coqtop: lauching/sending messages/receiving messages {{{
 " Functions manipulating coqtop process
 
 " kill coqtop process if any. The already_dead argument indicates coqtop was
 " killed by an exterior event (kill -9 in the command line for example) or
-" crash ("Check 1234567891011121314%nat." for example)
+" crashes ("Check 1234567891011121314%nat." for example)
 
-function KillCoqtop(already_dead)
+function s:KillCoqtop(already_dead)
   if exists('b:coqtop_pid') && b:coqtop_pid != 0
     if a:already_dead == 0
       :perl kill(9, VIM::Eval('b:coqtop_pid'));
@@ -505,7 +504,7 @@ function s:LaunchCoqtop(force)
     return 1
   endif
 
-  call KillCoqtop(0)
+  call s:KillCoqtop(0)
 
   :perl <<EOF
   use FileHandle;
@@ -559,7 +558,7 @@ EOF
 endfunction
 
 " Send the string s to coqtop
-function WriteCoqTop(s)
+function s:WriteCoqTop(s)
   :perl <<EOF
   $s = VIM::Eval('a:s');
   $OUT = $coqoutput[VIM::Eval("bufnr('%')")];
@@ -666,15 +665,9 @@ function s:SetCursorAfterInterp()
     normal z.
 endfunction
 
-" }}}
+" Create/parse/send/receive XML queries {{{1
 
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-"
 " Create XML queries and send/receive it
-
-" Send/receive XML queries {{{
 
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 "
@@ -803,7 +796,7 @@ function s:SendCommand(type, opt, s)
 
   call s:Debug('XML', l:query)
 
-  call WriteCoqTop(l:query)
+  call s:WriteCoqTop(l:query)
 endfunction
 
 function s:GetResponse(interrupt)
@@ -859,19 +852,7 @@ endfunction
 "
 " Functions changing loaded lines
 
-" A rather complex function. Determines the end position of the next command.
-" It searches for a '.' followed by a space outside comments and returns the
-" command together with the found position. Afterward, the beginning of the
-" next command is given by [b:curline] and [b:curcol].
-"
-" If end of file is detected, throw "eof" exception
-
-" 
-" call searchpos('\(\_$\|\_s\)*\*')
-" 
-" 
-
-function GetPart(bline, bcol, eline, ecol)
+function s:GetPart(bline, bcol, eline, ecol)
   let l:cmd = getline(a:bline, a:eline)
 
   " We should delete the beginning of first matched line and the end of the
@@ -887,30 +868,34 @@ function GetPart(bline, bcol, eline, ecol)
   return l:result
 endfunction
 
+" A rather complex function. Determines the end position of the next command.
+" It searches for a '.' followed by a space outside comments and returns the
+" command together with the found position. Afterward, the beginning of the
+" next command is given by [b:curline] and [b:curcol].
+"
+" If end of file is detected, throw "eof" exception
+
 function s:GetNextCmd()
   let [l:npl, l:npc] = s:NextPos(b:curline, b:curcol)
 
-  " First of all search for either '*', '+', '-', '{' or '}' just at the
+  " First of all, search for either '*', '+', '-', '{' or '}' just at the
   " beginning of the command.
-  
-  call cursor(b:curline, b:curcol)
-  let [l:cline, l:ccol] = searchpos('\_s*\%(\*\|+\|-\|{\|}\)', 'cW')
-  if l:cline == b:curline && l:ccol == b:curcol + 1
-    call cursor(b:curline, b:curcol)
-    let [l:dline, l:dcol] = searchpos('\%(\*\|+\|-\|{\|}\)', 'cW')
 
-    return [GetPart(b:curline, b:curcol, l:dline, l:dcol), l:dline, l:dcol, 1]
+  call cursor(l:npl, l:npc)
+  let [l:eline, l:ecol] = searchpos(s:PatFromPos(l:npl, l:npc, '\_s*\%(\*\|+\|-\|{\|}\)'), 'ceW')
+  if l:eline != 0
+    call DebugTraceAdd(5, 1, l:npl, l:npc, l:eline, l:ecol)
+    return [s:GetPart(l:npl, l:npc, l:eline, l:ecol), l:eline, l:ecol, 1]
   endif
 
-  " Search whether the next non-blank characters are (* :
-  "
-  call cursor(b:curline, b:curcol)
-  let [l:cline, l:ccol] = searchpos('\_s*(\*', 'cW')
-  if l:cline == b:curline && l:ccol == b:curcol + 1
-    call searchpos('(\*', 'cW')
-    let [l:dline, l:dcol] = searchpairpos('(\*', '', '\*)', 'W')
-
-    return [GetPart(b:curline, b:curcol, l:dline, l:dcol + 1), l:dline, l:dcol + 1, 0]
+  " Search whether the next non-blank characters are '(*' :
+  
+  call cursor(l:npl, l:npc)
+  let [l:bline, l:bcol] = searchpos(s:PatFromPos(l:npl, l:npc, '\_s*(\*'), 'ceW')
+  if l:bline != 0
+    let [l:eline, l:ecol] = searchpairpos('(\*', '', '\*)', 'cW')
+    call DebugTraceAdd(5, 1, l:bline, l:bcol - 1, l:eline, l:ecol + 1)
+    return [s:GetPart(l:bline, l:bcol, l:eline, l:ecol + 1), l:eline, l:ecol + 1, 0]
   endif
 
   " Then Search for a '.' outside comments
@@ -926,20 +911,30 @@ function s:GetNextCmd()
   while(! (l:found || l:eof))
     call cursor(l:dline, l:dcol)
     let [l:cline, l:ccol] = searchpos('(\*', 'cW')
-    let [l:dline, l:dcol] = s:NextDot(l:dline, l:dcol)
+    call cursor(l:dline, l:dcol)
+    let [l:dline, l:dcol] = searchpos('\.\_s', 'cW')
+
+    call DebugTraceAdd(1, 1, l:cline, l:ccol, l:cline, l:ccol + 1)
+    call DebugTraceAdd(1, 0, l:dline, l:dcol, l:dline, l:dcol)
 
     call s:Debug('infonextdot', '"(*" found at ' . l:cline . ', ' . l:ccol)
     call s:Debug('infonextdot', '"." found at ' . l:dline . ', ' . l:dcol)
 
     if l:dline == 0 && l:dcol == 0
-      let l:eof = 1 " Could be either EOF or the last command has no '.' at its end.
+      let l:eof = 1 " Most likely, the last command has no '.' at its end.
     endif
 
     if l:cline == 0 && l:ccol == 0 || (l:dline < l:cline || l:dline == l:cline && l:dcol < l:ccol)
-      " Next comment begin after the next '.' (or no comment) so things are OK
+      " Either the comment begins after the next '.' or there are no comment.
+      " So things are OK
+      call DebugTraceAdd(1, 1, l:cline, l:ccol, l:cline, l:ccol + 1)
+      call DebugTraceAdd(5, 0, l:dline, l:dcol, l:dline, l:dcol)
       let l:found = 1
+      call DebugTraceAdd(5, 1, l:npl, l:npc, l:dline, l:dcol)
     else
-      " Else move the cursor to the end of the comment
+      call DebugTraceAdd(5, 1, l:cline, l:ccol, l:cline, l:ccol + 1)
+      call DebugTraceAdd(1, 0, l:dline, l:dcol, l:dline, l:dcol)
+      " Else, '.' is inside a comment, move the cursor to the end of the comment
       call cursor(l:cline, l:ccol)
       let [l:dline, l:dcol] = searchpairpos('(\*', '', '\*)', 'W')
       call s:Debug('infonextdot', '"*)" found at ' . l:dline . ', ' . l:dcol)
@@ -947,6 +942,7 @@ function s:GetNextCmd()
       if l:dline == 0 && l:dcol == 0
         let l:eof = 1
       endif
+      call DebugTraceAdd(5, 1, l:cline, l:ccol, l:dline, l:dcol + 1)
     endif
   endwhile
 
@@ -956,12 +952,10 @@ function s:GetNextCmd()
 
   call s:Debug('infonextdot', 'Next dot is at ' . l:dline . ', ' . l:dcol)
 
-  return [GetPart(b:curline, b:curcol, l:dline, l:dcol), l:dline, l:dcol, 1]
+  return [s:GetPart(b:curline, b:curcol, l:dline, l:dcol), l:dline, l:dcol, 1]
 endfunction
 
-" }}}
-
-" Goal/informations buffers {{{
+" Special buffers: Goal and Informations {{{1
 
 " Set the syntax color for goals on current buffer
 function s:AddSyntaxColor()
@@ -1128,10 +1122,8 @@ function s:ShowGoalsInfo()
   call s:Debug('ShowGoalsInfo', '<<< ShowGoalsInfo()')
 endfunction
 
-" }}}
-"
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-" Send/rewind commands {{{
+" Send/rewind commands {{{1
 
 " Four functions for sending commands or undoing.
 " they return :
@@ -1211,7 +1203,7 @@ endfunction
 " Undo commands until it reaches at least the step number [nb].
 " Remarks:
 "  - coqtop can decide to undo more command (for example, when undoing a 'Qed',
-"     all the proof is undo)
+"     all the proof is undone)
 "  - this function does not change cursor position (even temporarily)
 function s:UndoTo(nb)
   call s:Debug('info_undo', 'Goto step ' . a:nb . ' with nbstep = ' . b:nbstep . ' nbsent = ' . b:nbsent)
@@ -1241,7 +1233,7 @@ function s:UndoTo(nb)
   endtry
 
   let b:nbsent = l:targetsent - l:extrarewind
-  let b:nbstep = (l:extrarewind == 0)?(a:nb):HistorySentIdx(l:targetsent - l:extrarewind)
+  let b:nbstep = (l:extrarewind == 0)?(a:nb):(s:HistorySentIdx(l:targetsent - l:extrarewind))
   if b:nbstep == 0
     let [l:nline, l:ncol] = [0, 0]
   else
@@ -1295,7 +1287,7 @@ function s:UndoToPos(line, col)
     try
       return s:UndoTo(s:GetStep(a:line, a:col) - 1)
     catch /^broken_pipe$/
-      call PipeIsBroken()
+      call s:PipeIsBroken()
       return -1
     endtry
   endif
@@ -1327,7 +1319,11 @@ function s:ProceedUntilEnd()
   return l:resSend
 endfunction
 
-function SetOption(num, b)
+function CoqIDESetOption(num, b)
+  if !exists('b:coqtop_pid')
+    return 
+  endif
+
   if a:num == 0
     let l:opt = ['Printing', 'Implicit']
     let l:desc = 'notation'
@@ -1368,14 +1364,183 @@ function SetOption(num, b)
   echomsg (a:b?'Set':'Unset') . ' printing ' . l:desc
 endfunction
 
-" }}}
+" Definition of autocommands  {{{1
 
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+" Triggered when the buffer had been modified
+function s:BufModified(bline, bcol, eline, ecol)
+  if s:UndoToPos(a:bline, a:bcol) != 1
+    call s:ShowGoalsInfo()
+  endif
+endfunction
+
+function s:BufModifiedInit()
+  let [_, l:line, l:col, _] = getpos('.')
+  let [_, l:mline, l:mcol, _] = getpos("'[")
+
+  let b:CoqIDEchangedtick = b:changedtick
+  let b:CoqIDElastline = l:line
+  let b:CoqIDElastcol = l:col
+  let b:CoqIDElastmode = 0    " normal mode
+  let b:CodIDEmline = l:mline
+  let b:CodIDEmcol = l:mcol
+endfunction
+
+function s:BufModifiedTriggered(insertmode)
+  let [_, l:line, l:col, _] = getpos('.')
+
+  if b:CoqIDEchangedtick != b:changedtick
+    let b:CoqIDEchangedtick = b:changedtick
+    call s:UnsetColorError()
+    if ! exists('b:coqtop_pid')
+      return
+    endif
+
+    let l:llinelen = strlen(getline(b:CoqIDElastline))
+    if b:CoqIDElastmode && a:insertmode && l:llinelen < b:CoqIDElastcol - 1
+      " in insert mode and tw option + change provoked a cut
+      let l:mline = b:CoqIDElastline
+      let l:mcol = l:llinelen
+    elseif !b:CoqIDElastmode && a:insertmode " o O c
+      let l:mline = l:line
+      let l:mcol = l:col
+    else  " correct when the user type 'r<CR>'
+      let [l:mline, l:mcol] = s:GetLowest(b:CoqIDElastline, b:CoqIDElastcol, l:line, l:col)
+    endif
+
+    "let [_, l:l1, l:c1, _] = getpos("'[")
+    "let [_, l:l2, l:c2, _] = getpos("']")
+    "if l:l1 < l:l2 || (l:l1 == l:l2 && l:c1 <= l:c2)
+    "  let b:CodIDEmline = l:l1 | let b:CodIDEmcol = l:c1
+    "  call s:BufModified(l:l1, l:c1, l:l2, l:c2)
+    "else
+    "  let b:CodIDEmline = l:l2 | let b:CodIDEmcol = l:c2
+    "  call s:BufModified(l:l2, l:c2, l:l1, l:c1)
+    "endif
+
+    "if exists('b:ppppp')
+    "  call matchdelete(b:ppppp) | unlet b:ppppp
+    "endif
+    "let b:ppppp = matchadd('CoqIDEDebug', s:PatBlock(l1,c1,l2,c2))
+    "
+    call s:BufModified(l:mline, l:mcol, l:mline, l:mcol)
+  endif
+
+  let b:CoqIDElastline = l:line
+  let b:CoqIDElastcol = l:col
+  let b:CoqIDElastmode = a:insertmode
+endfunction
+
+" This function is called when either the cursor moved or the current buffer
+" were modified. In the last case, when need to undo commands after the cursor
+" position. AFAIK, VIM does not permit to known the EXACT portion of text
+" modified. Hence we should use heuristics. The current algorithm is known to be
+" incorrect when the user use 'gq' or 'gw' command. However, it is improbable
+" the user applies these commands on coq code. When we use to command 'o', the
+" script uselessly rewind one command. There must be other commands which fool
+" the heuristics.
+" Using [nmap] for capturing the last operator seems to be a bad idea.
+function s:ActionOccured(insertmode)
+"  let [_, l:l1, l:c1, _] = getpos("'[")
+"  let [_, l:l2, l:c2, _] = getpos("']")
+"
+"  if exists('b:ppppp')
+"    call matchdelete(b:ppppp) | unlet b:ppppp
+"  endif
+"  let b:ppppp = matchadd('CoqIDEDebug', s:PatBlock(l:l1,l:c1,l:l2,l:c2))
+
+  let [_, l:line, l:col, _] = getpos('.')
+
+  if b:mychangedtick != b:changedtick
+    let b:mychangedtick = b:changedtick
+    call s:UnsetColorError()
+    if ! exists('b:coqtop_pid')
+      return
+    endif
+
+    let l:llinelen = strlen(getline(b:CoqIDElastline))
+    if b:lastmode && a:insertmode && l:llinelen < b:CoqIDElastcol - 1
+      " in insert mode and tw option + change provoked a cut
+      let l:mline = b:CoqIDElastline
+      let l:mcol = l:llinelen
+    elseif !b:lastmode && a:insertmode " o O c
+      let l:mline = l:line
+      let l:mcol = l:col
+    else  " correct when the user type 'r<CR>'
+      let [l:mline, l:mcol] = s:GetLowest(b:CoqIDElastline, b:CoqIDElastcol, l:line, l:col)
+    endif
+
+    " A list of commands modifying the text : o O c r s a C S x X d D p P J u U
+    if s:UndoToPos(l:mline, l:mcol) != 1
+      call s:ShowGoalsInfo()
+    endif
+  endif
+
+  let b:CoqIDElastline = l:line
+  let b:CoqIDElastcol = l:col
+  let b:lastmode = a:insertmode
+endfunction
+
+" Init coqIDE state :
+function s:CoqIDEInit()
+  if !exists('b:CoqIDEInit')
+    call s:Debug('Enterbuffer', '>>> CoqIDEInit')
+    let b:CoqIDEInit = 1
+    call s:BufModifiedInit()
+    " State of ide :
+    let b:info = []
+    let [b:curline, b:curcol] = [0, 0]
+    let [b:tline, b:tcol] = [0, 0]
+    let s:lastbuffer = bufnr('%')
+    lcd %:p:h " for 'Require Import'
+    call s:Debug('Enterbuffer', '<<< CoqIDEInit')
+  endif
+endfunction
+
+function s:LeaveBuffer()
+  if exists('s:in_script')
+    let s:lastbuffer = bufnr('%')
+  endif
+endfunction
+
+" Restore color and save information for [s:ActionOccured]
+function s:EnterBuffer()
+  if !exists('s:in_script') && exists('b:coqtop_pid') && s:lastbuffer != bufnr('%')
+      call s:Debug('Enterbuffer', '>>> Enterbuffer()')
+      call s:ShowGoalsInfo()
+      call s:Debug('Enterbuffer', '<<< Enterbuffer()')
+  endif
+
+  " Buffer on current window changed
+  if !exists('w:curbuf') || w:curbuf != bufnr('%')
+    let w:curbuf = bufnr('%')
+    call s:SetColorSent()
+  endif
+endfunction
+
+function s:EnterWindow()
+  if exists('s:tabchanged')
+"    echomsg 'Buffer :' . bufnr('%')
+    unlet s:tabchanged
+    call s:UpdateColor()
+  endif
+endfunction
+
+augroup CoqIDE
+  autocmd!
+
+  autocmd CursorMovedI *.v if exists('b:coqtop_pid') | call s:BufModifiedTriggered(1) | endif
+  autocmd CursorMoved *.v  if exists('b:coqtop_pid') | call s:BufModifiedTriggered(0) | endif
+  autocmd BufWritePost *.v let b:mychangedtick = b:changedtick
+  "autocmd BufWipeout *.v call s:KillCoqtop(1)
+  autocmd BufLeave *.v call s:LeaveBuffer()
+  "autocmd TabEnter *.v echomsg 'Buffer :' . bufnr('%') | let s:tabchanged = 1
+  autocmd BufEnter *.v call s:EnterBuffer()
+  autocmd WinEnter *.v call s:EnterWindow()
+augroup CoqIDE
+
+" Key binding and new commands  {{{1
+
 " All the rest of the file defines IHM
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-" Key binding {{{
 
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -1401,10 +1566,10 @@ function s:MoveOrRestoreCursor(resSend, savecur)
   endif
 endfunction
 
-function PipeIsBroken()
+function s:PipeIsBroken()
   call s:SetCursorAfterInterp()
   " TODO: Set the color of this incriminated command in red ?
-  call KillCoqtop(1)
+  call s:KillCoqtop(1)
   let l:winsave = winnr()
   let l:saveswb = &switchbuf
   execute 'set switchbuf=useopen'
@@ -1416,17 +1581,32 @@ function PipeIsBroken()
 endfunction
 
 " Wrapper for all functionalities
-function ExecCmd(cmd)
-  call s:Debug('ExecCmd', '>>> ExecCmd()')
+function CoqIDECmd(cmd)
+  if !exists('b:coqtop_pid') && 3 <= a:cmd && a:cmd <= 5
+    return 
+  endif
+
+  if a:cmd == 6
+    call s:KillCoqtop(0)
+    echomsg 'coqtop killed'
+    return
+  elseif a:cmd == 7
+    call s:SetMapKey()
+    return
+  endif
+
+  call s:CoqIDEInit()
+
+  call s:Debug('CoqIDECmd', '>>> CoqIDECmd()')
   if bufname('%') !~# '.*\.v'
     echomsg 'The current buffer is not a Coq source file'
-    call s:Debug('ExecCmd', '<<< ExecCmd() -> Not a source')
+    call s:Debug('CoqIDECmd', '<<< CoqIDECmd() -> Not a source')
     return
   endif
 
   if !s:LaunchCoqtop(0)
     echomsg 'Impossible to launch coqtop'
-    call s:Debug('ExecCmd', '<<< ExecCmd() -> NoCoq')
+    call s:Debug('CoqIDECmd', '<<< CoqIDECmd() -> NoCoq')
     return
   endif
 
@@ -1440,199 +1620,99 @@ function ExecCmd(cmd)
     elseif a:cmd == 1 
       let resCoqtop = s:ProceedUntilCursor()
     elseif a:cmd == 2 
-      let resCoqtop = s:UndoSteps(1)
-    elseif a:cmd == 3 
-      let resCoqtop = s:UndoSteps(b:nbstep)
-    elseif a:cmd == 4 
       let resCoqtop = s:ProceedUntilEnd()
-    else
+    elseif a:cmd == 3 
+      let resCoqtop = s:UndoSteps(1)
+    elseif a:cmd == 4 
+      let resCoqtop = s:UndoSteps(b:nbstep)
+    elseif a:cmd == 5
       let resCoqtop = s:ShowGoalsErrorBuffers()
       call s:SetCursorAfterInterp()
+    else
+      echomsg "CoqIDE: Sorry, I don't understand."
     endif
 
     call s:MoveOrRestoreCursor(l:resCoqtop, l:savecur)
     call s:ShowGoalsInfo()
     call s:UpdateBufColor()
   catch /^broken_pipe$/
-    call PipeIsBroken()
+    call s:PipeIsBroken()
   endtry
   unlet s:in_script
-  call s:Debug('ExecCmd', '<<< ExecCmd()')
+  call s:Debug('CoqIDECmd', '<<< CoqIDECmd()')
 endfunction
 
 " The commands for the user :
 function s:SetNewCommand()
-  command -bar -buffer IDENext         :call ExecCmd(0)
-  command -bar -buffer IDEToCursor     :call ExecCmd(1)
-  command -bar -buffer IDEUndo         :call ExecCmd(2)
-  command -bar -buffer IDEUndoAll      :call ExecCmd(3)
-  command -bar -buffer IDEToEOF        :call ExecCmd(4)
-  command -bar -buffer IDERefresh      :call ExecCmd(5)
-  command -bar -buffer IDEKill         :call KillCoqtop(0) | echomsg 'coqtop killed'
-"  command -buffer IDEBreak    :call s:BreakComputation()
+  command -bar -buffer CoqIDENext         :call CoqIDECmd(0)
+  command -bar -buffer CoqIDEToCursor     :call CoqIDECmd(1)
+  command -bar -buffer CoqIDEToEOF        :call CoqIDECmd(2)
+  command -bar -buffer CoqIDEUndo         :call CoqIDECmd(3)
+  command -bar -buffer CoqIDEUndoAll      :call CoqIDECmd(4)
+  command -bar -buffer CoqIDERefresh      :call CoqIDECmd(5)
+  command -bar -buffer CoqIDEKill         :call CoqIDECmd(6)
+  command -bar -buffer CoqIDESetMap       :call CoqIDECmd(7)
+"  command -buffer CoqIDEBreak    :call s:BreakComputation()
 endfunction
 
 " Map the commands to <F2>-<F6>
 function s:SetMapKey()
-  nmap <buffer> <silent> <F2> :<C-U>IDEUndo<CR>
-  imap <buffer> <silent> <F2> <ESC>:IDEUndo<CR>
+  nmap <buffer> <silent> <F2> :<C-U>CoqIDEUndo<CR>
+  imap <buffer> <silent> <F2> <ESC>:CoqIDEUndo<CR>
 
-  nmap <buffer> <silent> <F3> :<C-U>IDENext<CR>
-  imap <buffer> <silent> <F3> <ESC>:IDENext<CR>
+  nmap <buffer> <silent> <F3> :<C-U>CoqIDENext<CR>
+  imap <buffer> <silent> <F3> <ESC>:CoqIDENext<CR>
 
-  nmap <buffer> <silent> <F4> :<C-U>IDEToCursor<CR>
-  imap <buffer> <silent> <F4> <ESC>:IDEToCursor<CR>
+  nmap <buffer> <silent> <F4> :<C-U>CoqIDEToCursor<CR>
+  imap <buffer> <silent> <F4> <ESC>:CoqIDEToCursor<CR>
 
-  nmap <buffer> <silent> <F5> :<C-U>IDEUndoAll<CR>
-  imap <buffer> <silent> <F5> <ESC>:IDEUndoAll<CR>
+  nmap <buffer> <silent> <F5> :<C-U>CoqIDEUndoAll<CR>
+  imap <buffer> <silent> <F5> <ESC>:CoqIDEUndoAll<CR>
 
-  nmap <buffer> <silent> <F6> :<C-U>IDEToEOF<CR>
-  imap <buffer> <silent> <F6> <ESC>:IDEToEOF<CR>
+  nmap <buffer> <silent> <F6> :<C-U>CoqIDEToEOF<CR>
+  imap <buffer> <silent> <F6> <ESC>:CoqIDEToEOF<CR>
 
-  nmap <silent> <F7> :<C-U>IDERefresh<CR>
-  imap <silent> <F7> <ESC>:IDERefresh<CR>
+  nmap <silent> <F7> :<C-U>CoqIDERefresh<CR>
+  imap <silent> <F7> <ESC>:CoqIDERefresh<CR>
 
-  nmap <buffer> <silent> <F8> :<C-U>IDEKill<CR>
-  imap <buffer> <silent> <F8> <ESC>:IDEKill<CR>
+  nmap <buffer> <silent> <F8> :<C-U>CoqIDEKill<CR>
+  imap <buffer> <silent> <F8> <ESC>:CoqIDEKill<CR>
 
-  nnoremap <buffer> <Leader>c :call SetOption(1, 1)<CR>
-  nnoremap <buffer> <Leader>C :call SetOption(1, 0)<CR>
+  nnoremap <buffer> <Leader>c :call CoqIDESetOption(1, 1)<CR>
+  nnoremap <buffer> <Leader>C :call CoqIDESetOption(1, 0)<CR>
 
-  nnoremap <buffer> <Leader>m :call SetOption(2, 1)<CR>
-  nnoremap <buffer> <Leader>M :call SetOption(2, 0)<CR>
+  nnoremap <buffer> <Leader>m :call CoqIDESetOption(2, 1)<CR>
+  nnoremap <buffer> <Leader>M :call CoqIDESetOption(2, 0)<CR>
 
-  nnoremap <buffer> <Leader>n :call SetOption(3, 1)<CR>
-  nnoremap <buffer> <Leader>N :call SetOption(3, 0)<CR>
+  nnoremap <buffer> <Leader>n :call CoqIDESetOption(3, 1)<CR>
+  nnoremap <buffer> <Leader>N :call CoqIDESetOption(3, 0)<CR>
 
-  nnoremap <buffer> <Leader>a :call SetOption(4, 1)<CR>
-  nnoremap <buffer> <Leader>A :call SetOption(4, 0)<CR>
+  nnoremap <buffer> <Leader>a :call CoqIDESetOption(4, 1)<CR>
+  nnoremap <buffer> <Leader>A :call CoqIDESetOption(4, 0)<CR>
 
-  nnoremap <buffer> <Leader>e :call SetOption(5, 1)<CR>
-  nnoremap <buffer> <Leader>E :call SetOption(5, 0)<CR>
+  nnoremap <buffer> <Leader>e :call CoqIDESetOption(5, 1)<CR>
+  nnoremap <buffer> <Leader>E :call CoqIDESetOption(5, 0)<CR>
 
-  nnoremap <buffer> <Leader>u :call SetOption(6, 1)<CR>
-  nnoremap <buffer> <Leader>U :call SetOption(6, 0)<CR>
-
-endfunction
-
-" Add a menu item :
-
-amenu <silent> IDE.Next         :IDENext<CR>
-amenu <silent> IDE.Previous     :IDEUndo<CR>
-amenu <silent> IDE.ToCursor     :IDEToCursor<CR>
-amenu <silent> IDE.UndoAll      :IDEUndoAll<CR>
-amenu <silent> IDE.EOF          :IDEToEOF<CR>
-amenu <silent> IDE.ShowGoalInfo :IDERefresh<CR>
-amenu <silent> IDE.Kill         :IDEKill<CR>
-"amenu <silent> IDE.Break    :IDEBreak<CR>
-" }}}
-"
-" autocmd  {{{
-
-" This function is called when either the cursor moved or the current buffer
-" were modified. In the last case, when need to undo commands after the cursor
-" position. AFAIK, VIM does not permit to known the portion of text modified.
-" Hence we should use heuristics. The current algorithm is known to be
-" incorrect when the user use 'gq' or 'gw' command. However, it is improbable
-" the user applies these commands on coq code. When we use to command 'o', the
-" script uselessly rewind one command. There must be other commands which fool
-" the heuristics.
-" Using [nmap] for capturing the last operator seems to be a bad idea.
-function ActionOccured(insertmode)
-  let [_, l:line, l:col, _] = getpos('.')
-
-  if b:mychangedtick != b:changedtick
-    let b:mychangedtick = b:changedtick
-    call s:UnsetColorError()
-    if ! exists('b:coqtop_pid')
-      return
-    endif
-
-    let l:llinelen = strlen(getline(b:lastline))
-    if b:lastmode && a:insertmode && l:llinelen < b:lastcol - 1
-      " in insert mode and tw option + change provoked a cut
-      let l:mline = b:lastline
-      let l:mcol = l:llinelen
-    elseif !b:lastmode && a:insertmode " o O c
-      let l:mline = l:line
-      let l:mcol = l:col
-    else  " correct when the user type 'r<CR>'
-      let [l:mline, l:mcol] = s:GetLowest(b:lastline, b:lastcol, l:line, l:col)
-    endif
-
-    " A list of commands modifying the text : o O c r s a C S x X d D p P J u U
-    if s:UndoToPos(l:mline, l:mcol) != 1
-      call s:ShowGoalsInfo()
-    endif
-  endif
-
-  let b:lastline = l:line
-  let b:lastcol = l:col
-  let b:lastmode = a:insertmode
-endfunction
-
-autocmd CursorMovedI *.v call ActionOccured(1)
-autocmd CursorMoved *.v call ActionOccured(0)
-autocmd BufWritePost *.v let b:mychangedtick = b:changedtick
-
-function LeaveBuffer()
-  if exists('s:in_script')
-    let s:lastbuffer = bufnr('%')
-  endif
-endfunction
-
-" Restore color and save information for [ActionOccured]
-function EnterBuffer()
-  " First time, we need to initialized some variables :
-  if !exists('b:init')
-    call s:Debug('Enterbuffer', '>>> Enterbuffer(init)')
-    " State used when a cursor moved :
-    let b:mychangedtick = b:changedtick " Last value of b:changedtick variable
-    let [_, l:line, l:col, _] = getpos('.')
-    let b:lastline = l:line
-    let b:lastcol = l:col
-    let b:lastmode = 0    " normal mode
-
-    " State for ide :
-    let b:info = []
-    let [b:curline, b:curcol] = [0, 0]
-    let [b:tline, b:tcol] = [0, 0]
-
-    let s:lastbuffer = bufnr('%')
-    let b:init = 1
-    call s:SetNewCommand()
-    call s:SetMapKey()
-    lcd %:p:h
-    call s:Debug('Enterbuffer', '<<< Enterbuffer()')
-  endif
-
-  if !exists('s:in_script') && exists('b:coqtop_pid') && s:lastbuffer != bufnr('%')
-      call s:Debug('Enterbuffer', '>>> Enterbuffer()')
-      call s:ShowGoalsInfo()
-      call s:Debug('Enterbuffer', '<<< Enterbuffer()')
-  endif
-
-  if !exists('w:curbuf') || w:curbuf != bufnr('%')
-    let w:curbuf = bufnr('%')
-     call s:SetColorSent()
-  endif
+  nnoremap <buffer> <Leader>u :call CoqIDESetOption(6, 1)<CR>
+  nnoremap <buffer> <Leader>U :call CoqIDESetOption(6, 0)<CR>
 
 endfunction
 
-function EnterWindow()
-  if exists('s:tabchanged')
-"    echomsg 'Buffer :' . bufnr('%')
-    unlet s:tabchanged
-    call UpdateColor()
-  endif
-endfunction
+" Add commands, keymap and menu :
 
-"autocmd BufWipeout *.v call KillCoqtop(1)
+call s:SetNewCommand()
 
-autocmd BufLeave *.v call LeaveBuffer()
-"autocmd TabEnter *.v echomsg 'Buffer :' . bufnr('%') | let s:tabchanged = 1
-autocmd BufEnter *.v call EnterBuffer()
-autocmd WinEnter *.v call EnterWindow()
+if exists('g:CoqIDEDefaultMap')
+  CoqIDESetMap
+endif
 
-" }}}
+amenu <silent> CoqIDE.Next         :CoqIDENext<CR>
+amenu <silent> CoqIDE.Previous     :CoqIDEUndo<CR>
+amenu <silent> CoqIDE.ToCursor     :CoqIDEToCursor<CR>
+amenu <silent> CoqIDE.UndoAll      :CoqIDEUndoAll<CR>
+amenu <silent> CoqIDE.EOF          :CoqIDEToEOF<CR>
+amenu <silent> CoqIDE.ShowGoalInfo :CoqIDERefresh<CR>
+amenu <silent> CoqIDE.Kill         :CoqIDEKill<CR>
+"amenu <silent> CoqIDE.Break    :CoqIDEBreak<CR>
 
+" vim:fdm=marker
