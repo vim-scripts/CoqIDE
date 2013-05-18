@@ -1,10 +1,10 @@
 " Copyright: Copyright (C) 2013 Matthieu Carlier
-" Last Change: 2013 April 14
+" Last Change: 2013 April 27
 "
 " Filename: coq_IDE.vim
 " Author:   Matthieu Carlier <matthieu.carlier@caramail.fr>
 " URL:      http://www.vim.org/scripts/script.php?script_id=4388
-" $revision: 0.94b$
+" $revision: 0.96b$
 "
 " License: CeCILL-C V1
 "
@@ -25,7 +25,7 @@
 " Otherwise you can specify it path by adding
 " 'let CoqIDE_coqtop = "/path/to/coqtop.opt"' in your "~/.vimrc".
 "
-" If you want to load default key binding, add "let g:CoqIDEDefaultKeyMap = 1"
+" If you want to load default key binding, add "let g:CoqIDEDefaultMap = 1"
 " in your "~/.vimrc" or execute command "CoqIDESetMap" after loading a "*.v".
 "
 " Here are the default key bindings :
@@ -34,7 +34,7 @@
 "    <F4> -> IDEToCursor
 "    <F5> -> IDEUndoAll
 "    <F6> -> IDEToEOF
-"    <F7> -> IDERefresh     
+"    <F7> -> IDERefresh
 "    <F8> -> IDEKill
 "
 " Usage:
@@ -59,13 +59,20 @@
 "  - :redraw doesn't work on MacVim GUI. What about gvim ?
 "
 " History:
+"   2013-05-18
+"     Correct end of expresssion detection when '..' syntax is used.
+"
+"   2013-04-27
+"     Correct a bug when undoing a comment at the beginning of the file
+"     Correct the definition of commands and maps.
+"
 "   2013-04-01
 "     Few aesthetics change
 "     Change interface, you can known source this script without problem
 "
 "   2013-01-21
 "     Fix a bug on '-', '+', '*', '{', '}' and comments at beginning of file
-"     Now key bindings are not loaded by default, set g:CoqIDEDefaultKeyMap
+"     Now key bindings are not loaded by default, set g:CoqIDEDefaultMap
 "
 "   2012-09-01
 "     Add support for '-', '+', '*', '{' and '}' in proof
@@ -178,7 +185,7 @@ endfunction
 
 function s:AddToHistory(bline, bcol, eline, ecol, sent)
   if a:sent
-    let b:nbsent = b:nbsent + 1 
+    let b:nbsent = b:nbsent + 1
   endif
 
   if len(b:coqhistory) <= b:nbstep
@@ -195,7 +202,7 @@ function s:HistorySentIdx(sent)
   let l:found = 0
   let l:cur = a:sent - 1
 
-  while(!l:found && l:cur + 1 < b:nbstep) 
+  while(!l:found && l:cur + 1 < b:nbstep)
     call s:Debug('info_history', 'HistorySentIdx: historyidx[' . (l:cur + 1) . '] = ' . b:coqhistory[l:cur + 1][4])
     if b:coqhistory[l:cur + 1 ][4] == a:sent + 1
       let l:found = 1
@@ -743,7 +750,7 @@ function s:XML_decode_goals(s)
   let l:fg_goal_list = split(substitute(l:fg, '^<goal>\(.*\)</goal>$', '\1', ''), '</goal><goal>')
   call map(l:fg_goal_list, 's:XML_decode_goal(v:val)')
 
-  
+
   let l:bg_goal_list = split(substitute(l:bg, '^<goal>\(.*\)</goal>$', '\1', ''), '</goal><goal>')
 "  call map(l:bg_goal_list, 's:XML_decode_goal(v:val)')
 
@@ -889,7 +896,7 @@ function s:GetNextCmd()
   endif
 
   " Search whether the next non-blank characters are '(*' :
-  
+
   call cursor(l:npl, l:npc)
   let [l:bline, l:bcol] = searchpos(s:PatFromPos(l:npl, l:npc, '\_s*(\*'), 'ceW')
   if l:bline != 0
@@ -912,7 +919,7 @@ function s:GetNextCmd()
     call cursor(l:dline, l:dcol)
     let [l:cline, l:ccol] = searchpos('(\*', 'cW')
     call cursor(l:dline, l:dcol)
-    let [l:dline, l:dcol] = searchpos('\.\_s', 'cW')
+    let [l:dline, l:dcol] = searchpos('\([^.]\zs\.\|^\.\)\ze\_s', 'cW')
 
     call DebugTraceAdd(1, 1, l:cline, l:ccol, l:cline, l:ccol + 1)
     call DebugTraceAdd(1, 0, l:dline, l:dcol, l:dline, l:dcol)
@@ -1216,16 +1223,16 @@ function s:UndoTo(nb)
   let l:targetsent = (a:nb < 1)?0:(b:coqhistory[a:nb - 1][4])
   let l:nbrewind = (a:nb < 1)?(b:nbsent):(b:nbsent - l:targetsent)
 
-  if l:nbrewind == 0
+  if l:nbrewind == 0 " Undo a bunch of lines containing comments only
     let b:nbstep = a:nb
-    let [_, _, l:nline, l:ncol, _, _] = b:coqhistory[b:nbstep - 1]
+    let [_, _, l:nline, l:ncol, _, _] = (b:nbstep == 0)?[0, 0, 0, 0, 0, 0]:(b:coqhistory[b:nbstep - 1])
     call s:SetLastPositionSent(l:nline, l:ncol)
     call s:UpdateBufColor()
     call s:Debug('info_undo', 'Goto step ' . a:nb . ': rewind a comment')
     return 2
   endif
 
-  try
+  try " Undo a bunch of lines containing commands
     call s:SendCommand('rewind', l:nbrewind, '')
     let [l:type, l:extrarewind] = s:GetResponse(0)
   catch /^fail$/ " the other fail is unlikely to happen
@@ -1321,7 +1328,7 @@ endfunction
 
 function CoqIDESetOption(num, b)
   if !exists('b:coqtop_pid')
-    return 
+    return
   endif
 
   if a:num == 0
@@ -1583,7 +1590,7 @@ endfunction
 " Wrapper for all functionalities
 function CoqIDECmd(cmd)
   if !exists('b:coqtop_pid') && 3 <= a:cmd && a:cmd <= 5
-    return 
+    return
   endif
 
   if a:cmd == 6
@@ -1617,13 +1624,13 @@ function CoqIDECmd(cmd)
 
     if a:cmd == 0
       let resCoqtop = s:SendOneCmd()
-    elseif a:cmd == 1 
+    elseif a:cmd == 1
       let resCoqtop = s:ProceedUntilCursor()
-    elseif a:cmd == 2 
+    elseif a:cmd == 2
       let resCoqtop = s:ProceedUntilEnd()
-    elseif a:cmd == 3 
+    elseif a:cmd == 3
       let resCoqtop = s:UndoSteps(1)
-    elseif a:cmd == 4 
+    elseif a:cmd == 4
       let resCoqtop = s:UndoSteps(b:nbstep)
     elseif a:cmd == 5
       let resCoqtop = s:ShowGoalsErrorBuffers()
@@ -1644,57 +1651,57 @@ endfunction
 
 " The commands for the user :
 function s:SetNewCommand()
-  command -bar -buffer CoqIDENext         :call CoqIDECmd(0)
-  command -bar -buffer CoqIDEToCursor     :call CoqIDECmd(1)
-  command -bar -buffer CoqIDEToEOF        :call CoqIDECmd(2)
-  command -bar -buffer CoqIDEUndo         :call CoqIDECmd(3)
-  command -bar -buffer CoqIDEUndoAll      :call CoqIDECmd(4)
-  command -bar -buffer CoqIDERefresh      :call CoqIDECmd(5)
-  command -bar -buffer CoqIDEKill         :call CoqIDECmd(6)
-  command -bar -buffer CoqIDESetMap       :call CoqIDECmd(7)
+  command -bar CoqIDENext         :call CoqIDECmd(0)
+  command -bar CoqIDEToCursor     :call CoqIDECmd(1)
+  command -bar CoqIDEToEOF        :call CoqIDECmd(2)
+  command -bar CoqIDEUndo         :call CoqIDECmd(3)
+  command -bar CoqIDEUndoAll      :call CoqIDECmd(4)
+  command -bar CoqIDERefresh      :call CoqIDECmd(5)
+  command -bar CoqIDEKill         :call CoqIDECmd(6)
+  command -bar CoqIDESetMap       :call CoqIDECmd(7)
 "  command -buffer CoqIDEBreak    :call s:BreakComputation()
 endfunction
 
 " Map the commands to <F2>-<F6>
 function s:SetMapKey()
-  nmap <buffer> <silent> <F2> :<C-U>CoqIDEUndo<CR>
-  imap <buffer> <silent> <F2> <ESC>:CoqIDEUndo<CR>
+  nmap <silent> <F2> :<C-U>CoqIDEUndo<CR>
+  imap <silent> <F2> <ESC>:CoqIDEUndo<CR>
 
-  nmap <buffer> <silent> <F3> :<C-U>CoqIDENext<CR>
-  imap <buffer> <silent> <F3> <ESC>:CoqIDENext<CR>
+  nmap <silent> <F3> :<C-U>CoqIDENext<CR>
+  imap <silent> <F3> <ESC>:CoqIDENext<CR>
 
-  nmap <buffer> <silent> <F4> :<C-U>CoqIDEToCursor<CR>
-  imap <buffer> <silent> <F4> <ESC>:CoqIDEToCursor<CR>
+  nmap <silent> <F4> :<C-U>CoqIDEToCursor<CR>
+  imap <silent> <F4> <ESC>:CoqIDEToCursor<CR>
 
-  nmap <buffer> <silent> <F5> :<C-U>CoqIDEUndoAll<CR>
-  imap <buffer> <silent> <F5> <ESC>:CoqIDEUndoAll<CR>
+  nmap <silent> <F5> :<C-U>CoqIDEUndoAll<CR>
+  imap <silent> <F5> <ESC>:CoqIDEUndoAll<CR>
 
-  nmap <buffer> <silent> <F6> :<C-U>CoqIDEToEOF<CR>
-  imap <buffer> <silent> <F6> <ESC>:CoqIDEToEOF<CR>
+  nmap <silent> <F6> :<C-U>CoqIDEToEOF<CR>
+  imap <silent> <F6> <ESC>:CoqIDEToEOF<CR>
 
   nmap <silent> <F7> :<C-U>CoqIDERefresh<CR>
   imap <silent> <F7> <ESC>:CoqIDERefresh<CR>
 
-  nmap <buffer> <silent> <F8> :<C-U>CoqIDEKill<CR>
-  imap <buffer> <silent> <F8> <ESC>:CoqIDEKill<CR>
+  nmap <silent> <F8> :<C-U>CoqIDEKill<CR>
+  imap <silent> <F8> <ESC>:CoqIDEKill<CR>
 
-  nnoremap <buffer> <Leader>c :call CoqIDESetOption(1, 1)<CR>
-  nnoremap <buffer> <Leader>C :call CoqIDESetOption(1, 0)<CR>
+  nnoremap <Leader>c :call CoqIDESetOption(1, 1)<CR>
+  nnoremap <Leader>C :call CoqIDESetOption(1, 0)<CR>
 
-  nnoremap <buffer> <Leader>m :call CoqIDESetOption(2, 1)<CR>
-  nnoremap <buffer> <Leader>M :call CoqIDESetOption(2, 0)<CR>
+  nnoremap <Leader>m :call CoqIDESetOption(2, 1)<CR>
+  nnoremap <Leader>M :call CoqIDESetOption(2, 0)<CR>
 
-  nnoremap <buffer> <Leader>n :call CoqIDESetOption(3, 1)<CR>
-  nnoremap <buffer> <Leader>N :call CoqIDESetOption(3, 0)<CR>
+  nnoremap <Leader>n :call CoqIDESetOption(3, 1)<CR>
+  nnoremap <Leader>N :call CoqIDESetOption(3, 0)<CR>
 
-  nnoremap <buffer> <Leader>a :call CoqIDESetOption(4, 1)<CR>
-  nnoremap <buffer> <Leader>A :call CoqIDESetOption(4, 0)<CR>
+  nnoremap <Leader>a :call CoqIDESetOption(4, 1)<CR>
+  nnoremap <Leader>A :call CoqIDESetOption(4, 0)<CR>
 
-  nnoremap <buffer> <Leader>e :call CoqIDESetOption(5, 1)<CR>
-  nnoremap <buffer> <Leader>E :call CoqIDESetOption(5, 0)<CR>
+  nnoremap <Leader>e :call CoqIDESetOption(5, 1)<CR>
+  nnoremap <Leader>E :call CoqIDESetOption(5, 0)<CR>
 
-  nnoremap <buffer> <Leader>u :call CoqIDESetOption(6, 1)<CR>
-  nnoremap <buffer> <Leader>U :call CoqIDESetOption(6, 0)<CR>
+  nnoremap <Leader>u :call CoqIDESetOption(6, 1)<CR>
+  nnoremap <Leader>U :call CoqIDESetOption(6, 0)<CR>
 
 endfunction
 
