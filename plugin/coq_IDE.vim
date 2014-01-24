@@ -775,7 +775,7 @@ function s:SendCommand(type, opt, s)
     let l:s = substitute(l:s, "'", '\&apos;', 'g')
     let l:s = substitute(l:s, '"', '\&quot;', 'g')
 
-    let l:query = '<call val="interp">' . l:s . '</call>'
+    let l:query = '<call val="interp" id="0">' . l:s . '</call>'
     let b:lastquerykind = 'interp'
     let b:lastquery = l:query
   elseif a:type == 'rewind'
